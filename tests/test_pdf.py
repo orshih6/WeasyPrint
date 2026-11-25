@@ -868,6 +868,31 @@ def test_pdf_tags_nested_lists_order():
         assert sorted(numbers) == numbers
 
 
+@assert_no_logs
+@pytest.mark.parametrize(('html', 'tag'), [
+    ('<ul><li><p>a</p></li></ul>', b'P'),
+    ('<ul><li><dl style="display: block"><dt>a</dt><dd>b</dd></dl></li></ul>', b'L'),
+])
+def test_pdf_tags_list_item_body(html, tag):
+    pdf = FakeHTML(string=f'<html lang="en">{html}').write_pdf(
+        pdf_variant='pdf/ua-1', uncompressed_pdf=True)
+    objects = dict(re.findall(b'\n([0-9]+) 0 obj\n(.*?)\nendobj', pdf, re.S))
+    tags = {
+        number: re.search(b'/S /([A-Za-z]+)', obj).group(1)
+        for number, obj in objects.items() if b'/StructElem' in obj}
+
+    def children(number):
+        kids = re.search(b'/K \\[(.*?)\\]', objects[number]).group(1)
+        return [kid for kid in re.findall(b'([0-9]+) 0 R', kids) if kid in tags]
+
+    list_item, = [
+        number for number, name in tags.items() if name == b'LI' and
+        any(tags[child] == b'Lbl' for child in children(number))]
+    label, body = children(list_item)
+    assert (tags[label], tags[body]) == (b'Lbl', b'LBody')
+    assert [tags[child] for child in children(body)] == [tag]
+
+
 def test_pdf_tags_table_headers():
     pdf = FakeHTML(string='''
       <html lang="fr">

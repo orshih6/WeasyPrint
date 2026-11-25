@@ -134,6 +134,7 @@ def _build_box_tree(box, parent, pdf, page_number, nums, annotations, tags):
     tag = _get_pdf_tag(element_tag)
 
     # Handle special cases.
+    lbody_wrapper = False
     if element_tag in ('html', 'body') or isinstance(box, boxes.PageBox):
         # Avoid generate page, html and body boxes as a semantic node, yield children.
         if isinstance(box, boxes.ParentBox) and not isinstance(box, boxes.LineBox):
@@ -184,6 +185,9 @@ def _build_box_tree(box, parent, pdf, page_number, nums, annotations, tags):
                 parent['K'].append(child.reference)
             yield parent
             return
+        else:
+            # Wrap list item content in list item body.
+            lbody_wrapper = True
 
     # Create box element.
     element = pydyf.Dictionary({
@@ -194,6 +198,18 @@ def _build_box_tree(box, parent, pdf, page_number, nums, annotations, tags):
         'P': parent.reference,
     })
     pdf.add_object(element)
+
+    # Create list item body, containing list item content except marker.
+    content_element = element
+    if lbody_wrapper:
+        content_element = pydyf.Dictionary({
+            'Type': '/StructElem',
+            'S': b'/LBody',
+            'K': pydyf.Array([]),
+            'Pg': pdf.page_references[page_number],
+            'P': element.reference,
+        })
+        pdf.add_object(content_element)
 
     # Handle special cases.
     if tag == 'Figure':
@@ -244,8 +260,8 @@ def _build_box_tree(box, parent, pdf, page_number, nums, annotations, tags):
             'Pg': pdf.page_references[page_number],
         })
         pdf.add_object(object_reference)
-        annotations.append((element.reference, annotation))
-        element['K'].append(object_reference.reference)
+        annotations.append((content_element.reference, annotation))
+        content_element['K'].append(object_reference.reference)
 
     # Include widget annotations.
     if box.widget_annotation:
@@ -285,10 +301,10 @@ def _build_box_tree(box, parent, pdf, page_number, nums, annotations, tags):
                         'S': pydyf.name(kid['tag']),
                         'K': pydyf.Array([kid['mcid']]),
                         'Pg': pdf.page_references[page_number],
-                        'P': element.reference,
+                        'P': content_element.reference,
                     })
                     pdf.add_object(kid_element)
-                    element['K'].append(kid_element.reference)
+                    content_element['K'].append(kid_element.reference)
                     nums[kid['mcid']] = kid_element.reference
             else:
                 # Recursively build tree for child.
@@ -296,8 +312,11 @@ def _build_box_tree(box, parent, pdf, page_number, nums, annotations, tags):
                     # In PDFs, nested lists are linked to the parent list, but in
                     # HTML, nested lists are linked to a parent’s list item.
                     child_parent = parent
-                else:
+                elif child.element_tag.endswith('::marker'):
+                    # Keep list item label out of list item body.
                     child_parent = element
+                else:
+                    child_parent = content_element
                 # Keep the current number of parent children, so that we can add the
                 # new children before the possible grandchildren, for example for
                 # lists.
@@ -306,6 +325,10 @@ def _build_box_tree(box, parent, pdf, page_number, nums, annotations, tags):
                     child, child_parent, pdf, page_number, nums, annotations, tags)
                 child_parent['K'][child_index:child_index] = [
                     element.reference for element in child_elements]
+
+    if lbody_wrapper:
+        # Add list item body after list item label.
+        element['K'].append(content_element.reference)
 
     if isinstance(box, boxes.ReplacedBox):
         # Add replaced box.
